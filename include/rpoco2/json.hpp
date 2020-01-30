@@ -5,7 +5,7 @@ namespace rpoco2 {
 	namespace json {
 
 		template<class T>
-		bool parse(T& dest,const char * src,int len=-1) {
+		bool parse(T& dest, const char* src, int len = -1) {
 			struct SA {
 				const char* src;
 				int len;
@@ -28,12 +28,11 @@ namespace rpoco2 {
 					return src[idx++];
 				}
 				inline void ignore() {
-					printf("Ignoring(%c)\n",src[idx]);
 					idx++;
 				}
 			}sa{ src,len };
 
-			return impl::parser<T,SA>::parse(dest, sa);
+			return impl::parser<T, SA>::parse(dest, sa);
 		}
 
 		namespace impl {
@@ -45,7 +44,7 @@ namespace rpoco2 {
 				return !ctx.eof();
 			}
 
-			template<class DST,class CTX>
+			template<class DST, class CTX>
 			inline bool parse_number(DST& dst, CTX& ctx) {
 				if (!skip_space(ctx))
 					return false;
@@ -57,10 +56,10 @@ namespace rpoco2 {
 				} else {
 					mul = 1;
 				}
-				DST ov=0;
+				DST ov = 0;
 				auto c = ctx.get();
 				if (c == '0') {
-				} else if ('1'<=c || c <= '9') {
+				} else if ('1' <= c || c <= '9') {
 					while (true) {
 						ov = ov * 10 + (c - '0');
 						c = ctx.peek();
@@ -80,7 +79,7 @@ namespace rpoco2 {
 						c = ctx.peek();
 						if (c < '0' || '9' < c)
 							return false;
-						while ('0'<=c && c<='9') {
+						while ('0' <= c && c <= '9') {
 							printf("Parsing FLT:'%c'\n", c);
 							ctx.ignore(); // ok num, use it
 							tm *= (DST)0.1;
@@ -100,8 +99,8 @@ namespace rpoco2 {
 				//std::is_integral<DST>
 			}
 
-			template<class DST,class CTX>
-			inline bool parse_string(DST& dst,CTX& ctx) {
+			template<class DST, class CTX>
+			inline bool parse_string(DST& dst, CTX& ctx) {
 				if (!skip_space(ctx))
 					return false;
 				if (ctx.get() != '\"')
@@ -127,7 +126,7 @@ namespace rpoco2 {
 			template<class T>
 			struct string_writer;
 
-			template<class CT,size_t L>
+			template<class CT, size_t L>
 			struct string_writer<CT[L]> {
 				CT* dest;
 				size_t index = 0;
@@ -151,58 +150,89 @@ namespace rpoco2 {
 			//	std::basic_string<CT> dest;
 			//};
 
-
-			template<class T,class CTX>
-			struct parser {
-				static bool parse(T& t,CTX& ctx) {
-					const auto* ati = t.rpoco2_type_info_get();
-
-					if (!skip_space(ctx))
-						return false;
-					if (ctx.get()!='{')
-						return false;
-					if (!skip_space(ctx))
-						return false;
-					while (ctx.peek() != '}') {
-						// TODO: generalize to passing symstringwriter..
-						char symname[100];
-						string_writer<decltype(symname)> sw{ symname };
-						if (!parse_string(sw,ctx))
-							return false;
-						if (!skip_space(ctx))
-							return false;
-						if (ctx.get() != ':')
-							return false;
-						bool ok = true;
-						auto symloc = ati->locator(&t, [&ok,&ctx](auto& name, auto& dv) {
-							ok = parser<std::remove_reference_t<decltype(dv)>, CTX>::parse(dv, ctx);
-						});
-						if (!ok)
-							return false;
-						if (!symloc(symname, sw.index)) {
-							// UNKNOWN PARSING NOT YET IMPL TODO
-							return false;
-						}
-						if (!skip_space(ctx))
-							return false;
-						auto c = ctx.peek();
-						if (c == ',') {
-							ctx.ignore();
-							if (!skip_space(ctx))
-								return false;
-							continue;
-						} else if (c == '}') {
-							ctx.ignore();
-							return true;
-						} else return false;
-					}
+			// Parseobject expects a keyparser, memberparser and context as inputs
+			template<class KP, class MP, class CTX>
+			bool parse_object(KP& kp, MP& mp, CTX& ctx) {
+				// ignore possible spaces before the object
+				if (!skip_space(ctx))
 					return false;
+				// read an object start token or fail
+				if (ctx.get() != '{')
+					return false;
+				// ignore pre-key/end spaces
+				if (!skip_space(ctx))
+					return false;
+				// empty object?
+				if (ctx.peek() == '}') {
+					ctx.ignore();
+					return true;
+				}
+				// then read until we've finished
+				while(true) {
+					// parse the key
+					if (!kp(ctx))
+						return false;
+					// ignore pre-:-separator spaces
+					if (!skip_space(ctx))
+						return false;
+					// expect or fail if : is missing
+					if (ctx.get() != ':')
+						return false;
+					// parse the member
+					if (!mp(ctx))
+						return false;
+					// ignore pre-end/end spaces
+					if (!skip_space(ctx))
+						return false;
+					auto c = ctx.peek();
+					if (c == ',') {
+						// more members, ignore the comma
+						ctx.ignore();
+						continue;
+					} else if (c == '}') {
+						// end of object, eat the } and return success!
+						ctx.ignore();
+						return true;
+					} else return false; // unknown token encountered
+				}
+			}
+
+			template<class T, class CTX>
+			struct parser {
+				static bool parse(T& t, CTX& ctx) {
+					// get type-info
+					const auto* ati = t.rpoco2_type_info_get();
+					// make a fixed 100 byte buffer for keys
+					char symname[100];
+					string_writer<decltype(symname)> sw{ symname };
+
+					// now parse the object
+					return parse_object(
+						[&sw](CTX& ctx) {
+							// this keyparser re-uses the buffer and asks the parse_string function to fill it in.
+							sw.reset();
+							return parse_string(sw, ctx);
+						}, [&sw, &ati, &t](CTX& ctx) {
+							// after the keyparser has completed we can issue the appropriate memberparser (depending on our datatype!)
+							bool ok = true;
+							// we create a locator that will execute the type-specific parser.
+							auto symloc = ati->locator(&t, [&ok, &ctx](auto& name, auto& dv) {
+								// dispatch the type-specific parser
+								ok = parser<std::remove_reference_t<decltype(dv)>, CTX>::parse(dv, ctx);
+							});
+							if (!symloc(sw.dest, sw.index)) {
+								// UNKNOWN/Freewheel PARSING NOT YET IMPL TODO
+								abort();
+								return false;
+							}
+							return ok;
+						}, ctx);
 				}
 			};
 
-			template<size_t L,class CTX>
-			struct parser<char[L],CTX> {
-				static bool parse(char (&t)[L], CTX& ctx) {
+			template<size_t L, class CTX>
+			struct parser<char[L], CTX> {
+				static bool parse(char(&t)[L], CTX& ctx) {
 					string_writer<char[L]> sw{ t };
 					return parse_string(sw, ctx);
 				}
