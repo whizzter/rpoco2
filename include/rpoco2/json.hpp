@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <string.h>
+#include <math.h>
 
 namespace rpoco2 {
 	namespace json {
@@ -36,6 +37,10 @@ namespace rpoco2 {
 		}
 
 		namespace impl {
+			template<typename CTX>
+			bool parse_ignore(CTX& ctx); // parse_ignore ignores everything but is a good template for parsing anything
+
+
 			template<class CTX>
 			inline bool skip_space(CTX& ctx) {
 				while (!ctx.eof() && isspace(ctx.peek())) {
@@ -80,7 +85,7 @@ namespace rpoco2 {
 						if (c < '0' || '9' < c)
 							return false;
 						while ('0' <= c && c <= '9') {
-							printf("Parsing FLT:'%c'\n", c);
+							//printf("Parsing FLT:'%c'\n", c);
 							ctx.ignore(); // ok num, use it
 							tm *= (DST)0.1;
 							ov = ov + tm * (DST)(c - '0');
@@ -88,11 +93,36 @@ namespace rpoco2 {
 						}
 					}
 					if (c == 'e' || c == 'E') {
-						ctx.get();
-						abort(); // TODO
-						dst = ov * mul; // TODO: exponent
+						ctx.get(); // clear off eE
+						int eSgn = 1;
+						c = ctx.peek();
+						if (c=='+') {
+							ctx.ignore();
+							c = ctx.peek();
+						} else if (c=='-') {
+							eSgn = -1;
+							ctx.ignore();
+							c = ctx.peek();
+						}
+						// clean of initial 0s
+						bool isValid = false;
+						while(c=='0') {
+							isValid = true;
+							ctx.ignore();
+							c = ctx.peek();
+						}
+						// now we get to the digits..
+						int exp=0;
+						if (!isValid && (c < '0' || '9' < c))
+							return false;
+						while('0'<=c && c<='9') {
+							exp = exp*10 + (c-'0');
+							ctx.ignore();
+							c = ctx.peek();
+						}
+						dst = ov * mul * pow(10,eSgn*exp);
 					} else {
-						dst = ov * mul; // TODO: exponent
+						dst = ov * mul;
 					}
 					return true;
 				}
@@ -110,8 +140,40 @@ namespace rpoco2 {
 						return false;
 					auto c = ctx.get();
 					if (c == '\\') {
+						c = ctx.get();
+						switch(c) {
+						case '\"' :
+						case '\\' :
+						case '/' :
+							if (!dst.put(c))
+								return false;
+							continue;
+						case 'b' :
+							if (!dst.put('\b'))
+								return false;
+							continue;
+						case 'f' :
+							if (!dst.put('\f'))
+								return false;
+							continue;
+						case 'n' :
+							if (!dst.put('\n'))
+								return false;
+							continue;
+						case 'r' :
+							if (!dst.put('\r'))
+								return false;
+							continue;
+						case 't' :
+							if (!dst.put('\t'))
+								return false;
+							continue;
+						default:
+							printf("Parse nonimpl-err with %c\n",c);
+							return false;
+						}
 						// TODO
-						abort();
+						//abort();
 					} else {
 						if (!dst.put(c))
 							return false;
@@ -222,11 +284,69 @@ namespace rpoco2 {
 							});
 							if (!symloc(sw.dest, sw.index)) {
 								// UNKNOWN/Freewheel PARSING NOT YET IMPL TODO
-								abort();
-								return false;
+								//printf("ERR, NEED NULL PARSER\n");
+								//abort();
+								//return false;
+								return parse_ignore(ctx);
 							}
 							return ok;
 						}, ctx);
+				}
+			};
+
+			template<class CTX>
+			int parse_peek(CTX& ctx) {
+				if (!skip_space(ctx))
+					return 0;
+				char c = ctx.peek();
+				switch(c) {
+				case '[' : case '{' : case '\"':
+				case 'n' : case 't' : case 'f' :
+					return c;
+				case '-' : case '+' :
+				case '0' : case '1' : case '2' : case '3' : case '4':
+				case '5' : case '6' : case '7' : case '8': case '9':
+					return '+';
+				default:
+					//printf("Bad peek:%c\n",c);
+					return 0;
+				}
+			}
+
+			template<typename MP,class CTX>
+			bool parse_array(MP& mp,CTX& ctx) {
+				if (!skip_space(ctx))
+					return false;
+				char c=ctx.get();
+				if (c!='[')
+					return false;
+				if (!skip_space(ctx)) return false;
+				c=ctx.peek();
+				int idx=0;
+				while(c!=']') {
+					if (!mp(ctx,idx++))
+						return false;
+					if (!skip_space(ctx)) return false;
+					c=ctx.peek();
+					if (c==',') {
+						ctx.ignore();
+						skip_space(ctx); // don't allow trailing comma so we won't re-load C for the next round and thus ] will be ignored and tried to be parsed!
+						continue;
+					} else if (c!=']') {
+						return false;
+					} // else would have a ] and that will break after the while
+				}
+				ctx.ignore(); // eat ]
+				if (!skip_space(ctx)) return false;
+				return true;
+			}
+
+			template<typename T,size_t L, class CTX>
+			struct parser<T[L], CTX> {
+				static bool parse(T(&t)[L], CTX& ctx) {
+					return parse_array([&t](CTX& ctx,int idx){
+						return parser<T,CTX>::parse(t[idx],ctx);
+					},ctx);
 				}
 			};
 
@@ -251,6 +371,52 @@ namespace rpoco2 {
 					return parse_number<int, CTX>(t, ctx);
 				}
 			};
+
+			template<typename CTX>
+			bool parse_known(CTX& ctx,const char *tok) {
+				char rc;
+				while(rc=*(tok++)) {
+					char c=ctx.get();
+					if (rc!=c)
+						return false;
+				}
+				return true;
+			}
+
+			template<typename CTX>
+			bool parse_ignore(CTX& ctx) {
+				int ty = parse_peek(ctx);
+				switch(ty) {
+				case '{' :
+					return parse_object(
+						[](CTX&ctx){return parse_ignore(ctx);},
+						[](CTX&ctx){return parse_ignore(ctx);},
+						ctx);
+				case '[' :
+					return parse_array([](CTX&ctx,int idx){return parse_ignore(ctx);},ctx);
+				case 't' :
+					return parse_known(ctx,"true");
+				case 'f' :
+					return parse_known(ctx,"false");
+				case 'n' :
+					return parse_known(ctx,"null");
+				case '+' : {
+						double t;
+						return parse_number(t,ctx);
+					}
+				case '\"': {
+						struct {
+							void reset() {}
+							bool put(int c) { return true; }
+							void term() {}
+						} nsw;
+						return parse_string(nsw,ctx);
+					}
+				default:
+					return false;
+				}
+			}
+
 
 		}
 	}
