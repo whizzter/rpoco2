@@ -1,40 +1,14 @@
+#pragma once
+
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
 
+#include "rpoco.hpp"
+
 namespace rpoco2 {
 	namespace json {
 
-		template<class T>
-		bool parse(T& dest, const char* src, int len = -1) {
-			struct SA {
-				const char* src;
-				int len;
-				int idx = 0;
-				inline bool eof() {
-					if (len < 0) {
-						return !src[idx];
-					} else {
-						return idx < len;
-					}
-				}
-				inline char peek() {
-					if (eof())
-						return 0;
-					return src[idx];
-				}
-				inline char get() {
-					if (eof())
-						return 0;
-					return src[idx++];
-				}
-				inline void ignore() {
-					idx++;
-				}
-			}sa{ src,len };
-
-			return impl::parser<T, SA>::parse(dest, sa);
-		}
 
 		namespace impl {
 			template<typename CTX>
@@ -64,6 +38,7 @@ namespace rpoco2 {
 				DST ov = 0;
 				auto c = ctx.get();
 				if (c == '0') {
+					c = ctx.peek();
 				} else if ('1' <= c || c <= '9') {
 					while (true) {
 						ov = ov * 10 + (c - '0');
@@ -120,7 +95,7 @@ namespace rpoco2 {
 							ctx.ignore();
 							c = ctx.peek();
 						}
-						dst = ov * mul * pow(10,eSgn*exp);
+						dst = ov * mul * (DST)pow(10,eSgn*exp);
 					} else {
 						dst = ov * mul;
 					}
@@ -268,29 +243,33 @@ namespace rpoco2 {
 					char symname[100];
 					string_writer<decltype(symname)> sw{ symname };
 
+					auto keyFn = [&sw](CTX& ctx) {
+						// this keyparser re-uses the buffer and asks the parse_string function to fill it in.
+						sw.reset();
+						return parse_string(sw, ctx);
+					};
+
+					auto valFn = [&sw, &ati, &t](CTX& ctx) {
+						// after the keyparser has completed we can issue the appropriate memberparser (depending on our datatype!)
+						bool ok = true;
+						// we create a locator that will execute the type-specific parser.
+						auto symloc = ati->locator(&t, [&ok, &ctx](auto& name, auto& dv) {
+							// dispatch the type-specific parser
+							ok = parser<std::remove_reference_t<decltype(dv)>, CTX>::parse(dv, ctx);
+							});
+						if (!symloc(sw.dest, sw.index)) {
+							// UNKNOWN/Freewheel PARSING NOT YET IMPL TODO
+							//printf("ERR, NEED NULL PARSER\n");
+							//abort();
+							//return false;
+							return parse_ignore(ctx);
+						}
+						return ok;
+					};
+
 					// now parse the object
 					return parse_object(
-						[&sw](CTX& ctx) {
-							// this keyparser re-uses the buffer and asks the parse_string function to fill it in.
-							sw.reset();
-							return parse_string(sw, ctx);
-						}, [&sw, &ati, &t](CTX& ctx) {
-							// after the keyparser has completed we can issue the appropriate memberparser (depending on our datatype!)
-							bool ok = true;
-							// we create a locator that will execute the type-specific parser.
-							auto symloc = ati->locator(&t, [&ok, &ctx](auto& name, auto& dv) {
-								// dispatch the type-specific parser
-								ok = parser<std::remove_reference_t<decltype(dv)>, CTX>::parse(dv, ctx);
-							});
-							if (!symloc(sw.dest, sw.index)) {
-								// UNKNOWN/Freewheel PARSING NOT YET IMPL TODO
-								//printf("ERR, NEED NULL PARSER\n");
-								//abort();
-								//return false;
-								return parse_ignore(ctx);
-							}
-							return ok;
-						}, ctx);
+						keyFn, valFn, ctx);
 				}
 			};
 
@@ -364,6 +343,12 @@ namespace rpoco2 {
 					return parse_number<float, CTX>(t, ctx);
 				}
 			};
+			template<class CTX>
+			struct parser<double, CTX> {
+				static bool parse(double& t, CTX& ctx) {
+					return parse_number<double, CTX>(t, ctx);
+				}
+			};
 
 			template<class CTX>
 			struct parser<int, CTX> {
@@ -371,6 +356,7 @@ namespace rpoco2 {
 					return parse_number<int, CTX>(t, ctx);
 				}
 			};
+
 
 			template<typename CTX>
 			bool parse_known(CTX& ctx,const char *tok) {
@@ -383,17 +369,32 @@ namespace rpoco2 {
 				return true;
 			}
 
+			template<class CTX>
+			struct parser<bool, CTX> {
+				static bool parse(bool& v, CTX& ctx) {
+					auto pv = parse_peek(ctx);
+					if (pv == 't') {
+						v = true;
+						return parse_known(ctx, "true");
+					} else if (pv == 'f') {
+						v = false;
+						return parse_known(ctx, "false");
+					} else return false;
+				}
+			};
+
 			template<typename CTX>
 			bool parse_ignore(CTX& ctx) {
 				int ty = parse_peek(ctx);
 				switch(ty) {
-				case '{' :
-					return parse_object(
-						[](CTX&ctx){return parse_ignore(ctx);},
-						[](CTX&ctx){return parse_ignore(ctx);},
-						ctx);
-				case '[' :
-					return parse_array([](CTX&ctx,int idx){return parse_ignore(ctx);},ctx);
+				case '{': {
+					auto ignFn = [](CTX& ctx) {return parse_ignore(ctx); };
+					return parse_object(ignFn,ignFn,ctx);
+				}
+				case '[': {
+					auto ignFn = [](CTX& ctx, int idx) {return parse_ignore(ctx); };
+					return parse_array(ignFn, ctx);
+				}
 				case 't' :
 					return parse_known(ctx,"true");
 				case 'f' :
@@ -419,5 +420,37 @@ namespace rpoco2 {
 
 
 		}
+
+		template<class T>
+		bool parse(T& dest, const char* src, int len = -1) {
+			struct SA {
+				const char* src;
+				int len;
+				int idx = 0;
+				inline bool eof() {
+					if (len < 0) {
+						return !src[idx];
+					} else {
+						return idx < len;
+					}
+				}
+				inline char peek() {
+					if (eof())
+						return 0;
+					return src[idx];
+				}
+				inline char get() {
+					if (eof())
+						return 0;
+					return src[idx++];
+				}
+				inline void ignore() {
+					idx++;
+				}
+			}sa{ src,len };
+
+			return impl::parser<T, SA>::parse(dest, sa);
+		}
+
 	}
 }

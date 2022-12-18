@@ -1,3 +1,4 @@
+#pragma once
 #ifndef __INCLUDED_RPOCO2_HPP__
 #define __INCLUDED_RPOCO2_HPP__
 
@@ -31,13 +32,14 @@ namespace rpoco2 {
 	};
 
 	struct type_info {
-		virtual int member_count() const=0;
+		virtual size_t member_count() const=0;
 		virtual const std::string_view& member_name(int idx) const=0;
 	};
 
 	namespace impl2 {
 		
-		using opt = std::tuple;
+		template<typename ...T>
+		using opt = std::tuple<T...>;
 
 		template<std::size_t OFFSET,typename... T,std::size_t... I>
 		constexpr auto remove_tuple_head_detail(const std::tuple<T...>& t, std::index_sequence<I...>) {
@@ -110,7 +112,7 @@ namespace rpoco2 {
 			}
 		public:
 
-			virtual int member_count() const {
+			virtual size_t member_count() const {
 				return names.size();
 			}
 			virtual const std::string_view& member_name(int idx) const {
@@ -163,6 +165,11 @@ namespace rpoco2 {
 						if (len == -1)
 							len = strlen(n);
 						for (int i = 0; i < len; i++)
+							feedone(n[i]);
+						return operator()();
+					}
+					virtual bool operator()(const char* n, size_t len) {
+						for (size_t i = 0; i < len; i++)
 							feedone(n[i]);
 						return operator()();
 					}
