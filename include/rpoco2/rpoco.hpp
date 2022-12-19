@@ -81,7 +81,7 @@ namespace rpoco2 {
 		public:
 			virtual member_location_result feed(char c)=0;
 			virtual bool operator()() = 0;
-			virtual bool operator()(const char* n, int len = -1) = 0;
+			virtual bool operator()(const char* n, size_t len = -1) = 0;
 		};
 
 		template<class BASE, class NAMES, class TNAME>
@@ -161,14 +161,16 @@ namespace rpoco2 {
 							return false;
 						}
 					}
-					virtual bool operator()(const char* n, int len = -1) {
+					//virtual bool operator()(const char* n, int len = -1) {
+					//	if (len == -1)
+					//		len = (int)strlen(n);
+					//	for (int i = 0; i < len; i++)
+					//		feedone(n[i]);
+					//	return operator()();
+					//}
+					virtual bool operator()(const char* n, size_t len=-1) {
 						if (len == -1)
 							len = strlen(n);
-						for (int i = 0; i < len; i++)
-							feedone(n[i]);
-						return operator()();
-					}
-					virtual bool operator()(const char* n, size_t len) {
 						for (size_t i = 0; i < len; i++)
 							feedone(n[i]);
 						return operator()();
